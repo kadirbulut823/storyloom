@@ -556,17 +556,16 @@ const cover = (hue, h = 150) => ({
 });
 
 /* ---------------- API ----------------
-   Story text goes through our own serverless proxy (netlify/functions/generate-text.js),
-   which holds the real Anthropic API key server-side. The browser never sees the key —
-   required for this to work once the site is deployed on its own domain. */
+   Story text goes through the existing netlify/functions/ai.js proxy, which holds the
+   real Anthropic API key server-side. The browser never sees the key. */
 async function ask(prompt) {
-  const res = await fetch("/.netlify/functions/generate-text", {
+  const res = await fetch("/.netlify/functions/ai", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify({ messages: [{ role: "user", content: prompt }] }),
   });
-  if (!res.ok) throw new Error("generate-text failed");
+  if (!res.ok) throw new Error("ai function failed");
   const d = await res.json();
-  return d.text || "";
+  return (d.content || []).map((b) => b.text || "").join("\n");
 }
 const asJSON = (t) => JSON.parse(t.replace(/```json|```/g, "").trim());
 const langLine = (lang) => (lang === "tr" ? "Türkçe yaz." : "Write in English.");
@@ -585,12 +584,13 @@ function ArtLayer({ art }) {
    used the very first time a character is drawn, which then BECOMES their reference. */
 async function drawPanel(desc, style, refImageUrl = null) {
   try {
-    const res = await fetch("/.netlify/functions/generate-image", {
+    const res = await fetch("/.netlify/functions/cizim", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        prompt: `${desc} Art style: ${style.p}`,
-        referenceImageUrl: refImageUrl || undefined,
+        panel: desc,
+        stil: style.p,
+        refImage: refImageUrl || undefined,
       }),
     });
     if (!res.ok) return null;
