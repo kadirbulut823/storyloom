@@ -566,14 +566,29 @@ const cover = (hue, h = 150) => ({
 /* ---------------- API ----------------
    Story text goes through the existing netlify/functions/ai.js proxy, which holds the
    real Anthropic API key server-side. The browser never sees the key. */
+/* Reads a plain-text stream from netlify/functions/ai.mjs into a single string.
+   Streaming (instead of one big blocking response) is what lets long generations
+   (a full novel chapter) finish without the platform treating the request as hung. */
+async function readAiStream(res) {
+  if (!res.ok) throw new Error("ai function failed");
+  if (!res.body) return await res.text();
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+  }
+  return text;
+}
+
 async function ask(prompt) {
   const res = await fetch("/.netlify/functions/ai", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ messages: [{ role: "user", content: prompt }] }),
   });
-  if (!res.ok) throw new Error("ai function failed");
-  const d = await res.json();
-  return (d.content || []).map((b) => b.text || "").join("\n");
+  return readAiStream(res);
 }
 
 /* Reads 1-3 uploaded reference images from an abandoned series' original art and turns them
@@ -594,9 +609,7 @@ Describe, in one dense paragraph (120-180 words), the precise visual style: line
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ messages: [{ role: "user", content }] }),
   });
-  if (!res.ok) throw new Error("style analysis failed");
-  const d = await res.json();
-  return (d.content || []).map((b) => b.text || "").join("\n").trim();
+  return (await readAiStream(res)).trim();
 }
 
 /* Merges a series' learned style-fingerprint (from uploaded original art) into whatever
@@ -714,9 +727,24 @@ function Bubble({ b }) {
    refImageUrl: if provided, uses PuLID face-reference to keep the SAME character consistent
    across every panel it appears in. If omitted, generates a fresh (non-referenced) image —
    used the very first time a character is drawn, which then BECOMES their reference. */
-async function drawPanel(desc, style, refImageUrl = null) {
+async function pollPrediction(id) {
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 1500));
+    const statusRes = await fetch(`/.netlify/functions/cizim-durum?id=${encodeURIComponent(id)}`);
+    if (!statusRes.ok) continue;
+    const s = await statusRes.json();
+    if (s.status === "succeeded" && s.url) return s.url;
+    if (s.status === "failed" || s.status === "canceled") return null;
+  }
+  return null;
+}
+
+/* styleRefImage: an uploaded original-art image for this series (see Memory tab). When present,
+   the freshly drawn panel is passed through a second style-transfer pass so it genuinely matches
+   that reference's look, not just a text description of it. */
+async function drawPanel(desc, style, refImageUrl = null, styleRefImage = null) {
   try {
-    // Step 1: start the generation — returns immediately with a prediction id.
+    // Step 1: start the base generation — returns immediately with a prediction id.
     const startRes = await fetch("/.netlify/functions/cizim", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -726,16 +754,21 @@ async function drawPanel(desc, style, refImageUrl = null) {
     const started = await startRes.json();
     if (!started.id) return null;
 
-    // Step 2: poll for completion (real image generation can take up to ~30s).
-    for (let i = 0; i < 40; i++) {
-      await new Promise((r) => setTimeout(r, 1500));
-      const statusRes = await fetch(`/.netlify/functions/cizim-durum?id=${encodeURIComponent(started.id)}`);
-      if (!statusRes.ok) continue;
-      const s = await statusRes.json();
-      if (s.status === "succeeded" && s.url) return s.url;
-      if (s.status === "failed" || s.status === "canceled") return null;
-    }
-    return null;
+    const baseUrl = await pollPrediction(started.id);
+    if (!baseUrl) return null;
+    if (!styleRefImage) return baseUrl;
+
+    // Step 2 (optional): restyle the base panel to match the uploaded reference art.
+    const restyleRes = await fetch("/.netlify/functions/restyle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ baseImageUrl: baseUrl, styleRefImage, prompt: `${desc}. ${style.p}` }),
+    });
+    if (!restyleRes.ok) return baseUrl; // fall back to the un-restyled panel rather than nothing
+    const restyled = await restyleRes.json();
+    if (!restyled.id) return baseUrl;
+    const finalUrl = await pollPrediction(restyled.id);
+    return finalUrl || baseUrl;
   } catch {
     return null;
   }
@@ -1122,7 +1155,7 @@ export default function StoryLoom() {
   const saveCharArt = (sid, cid, svg) => setSeries((prev) => prev.map((x) => x.id !== sid ? x : {
     ...x, lore: { ...x.lore, chars: x.lore.chars.map((c) => c.id === cid ? { ...c, art: svg } : c) },
   }));
-  const saveStyleDesc = (sid, desc) => setSeries((prev) => prev.map((x) => x.id !== sid ? x : { ...x, styleDescription: desc }));
+  const saveStyleDesc = (sid, desc, refImageUrl) => setSeries((prev) => prev.map((x) => x.id !== sid ? x : { ...x, styleDescription: desc, styleRefImage: refImageUrl || x.styleRefImage }));
 
   const rate = (sid, bid, rv) => {
     setSeries((prev) => prev.map((x) => x.id !== sid ? x : {
@@ -1639,7 +1672,7 @@ function Memory({ s, accent, style, saveCharArt, saveStyleDesc, say, spend }) {
     if (!spend(P.portrait)) return;
     setDrawing(c.id);
     try {
-      const svg = await drawPanel(`Character portrait: ${c.n}. ${c.d} Chest-up, face in focus, dramatic lighting.`, mergedStyle(s, style));
+      const svg = await drawPanel(`Character portrait: ${c.n}. ${c.d} Chest-up, face in focus, dramatic lighting.`, mergedStyle(s, style), null, s.styleRefImage);
       if (svg) saveCharArt(s.id, c.id, svg); else say(t("ed_nodraw"));
     } catch { say(t("ed_nodraw")); }
     setDrawing(null);
@@ -1664,7 +1697,7 @@ function Memory({ s, accent, style, saveCharArt, saveStyleDesc, say, spend }) {
     setAnalyzing(true);
     try {
       const desc = await analyzeStyle(styleFiles);
-      if (desc) { saveStyleDesc(s.id, desc); setStyleFiles([]); }
+      if (desc) { saveStyleDesc(s.id, desc, styleFiles[0]); setStyleFiles([]); }
       else say(t("ed_nodraw"));
     } catch { say(t("ed_nodraw")); }
     setAnalyzing(false);
@@ -1936,6 +1969,8 @@ Continue seamlessly from there.`
     else if (!spend(cost)) return;
     setBusy(true); setErr(null); setOut(null);
     try {
+      const plotRule = `PLOT DISCIPLINE (mandatory):
+Before writing, decide ONE concrete chapter goal: what specific thing changes, is revealed, or is won/lost by the end. Every scene must cause the next — no scene that could be deleted without breaking the chain, no generic "atmosphere" padding, no scene that exists only to show art. Reference specific named characters, open threads, or established rules from LORE below by name — vague, could-be-any-series writing is a failure. If this continues a previous chapter, the opening must pick up an unresolved thread from it, not restart the mood.`;
       const txt = await ask(isComic ? `You are a ${s.type} writer. For the series "${s.title}": ${target}
 ${langLine(lang)}
 
@@ -1945,11 +1980,13 @@ ${loreText(s)}
 SETTINGS:
 ${spec()}
 
+${plotRule}
+
 Return ONLY this JSON, no markdown, no backticks:
 {"title":"chapter title","scenes":[{"panel":"one-sentence framing direction","bubbles":[{"speaker":"character name, or empty for none","type":"speech | thought | shout | sfx","text":"dialogue, thought, or a short SFX word like CRASH / BOOM","pos":"tl | tr | bl | br | tc | bc | c"}],"text":"OPTIONAL short caption, max ONE short sentence, empty string if the panel speaks for itself through art+bubbles alone"}],"scores":{"fid":0-100,"char":0-100,"pace":0-100,"dial":0-100,"orig":0-100},"why":"one sentence justifying the scores","breaks":["any world rule you broke, else empty array"],"note":"one sentence of new permanent canon, or empty string"}
 "bubbles" can be an empty array for a quiet panel, or several for a busy one. Use "sfx" sparingly for real impact moments (an impact, a door slam, a gasp) — short punchy words only, no speaker. Vary "pos" so bubbles don't stack on top of each other.
 This is a ${s.type} — a VISUAL medium. Tell the story almost entirely through "panel" framing and "bubbles" (dialogue, thought, SFX). Keep "text" empty or near-empty on most panels — it is a rare caption, never a narration paragraph.
-Exactly ${mode === "basic" ? 4 : panels} scenes. Score honestly — don't flatter yourself; mark weaknesses down.`
+Exactly ${mode === "basic" ? 4 : panels} scenes, each one a distinct beat that advances the chapter goal. Score honestly — don't flatter yourself; mark weaknesses down, especially "pace" if any scene feels like filler.`
         : `You are a novelist. For the series "${s.title}": ${target}
 ${langLine(lang)}
 
@@ -1958,6 +1995,8 @@ ${loreText(s)}
 
 SETTINGS:
 ${spec()}
+
+${plotRule}
 
 Return ONLY this JSON, no markdown, no backticks:
 {"title":"chapter title","content":"the full chapter, written as continuous prose across several paragraphs (separate paragraphs with a blank line) — real novel writing, not a panel-by-panel breakdown, no stage directions","scores":{"fid":0-100,"char":0-100,"pace":0-100,"dial":0-100,"orig":0-100},"why":"one sentence justifying the scores","breaks":["any world rule you broke, else empty array"],"note":"one sentence of new permanent canon, or empty string"}
@@ -2015,7 +2054,7 @@ Between 5 and 9 panels. Keep the mood of the text.`);
     for (const [sc, i] of todo) {
       setDrawing(i);
       try {
-        const svg = await drawPanel(sc.panel, mergedStyle(s, style), findRefForScene(s, sc.panel));
+        const svg = await drawPanel(sc.panel, mergedStyle(s, style), findRefForScene(s, sc.panel), s.styleRefImage);
         if (svg) setOut((o) => ({ ...o, scenes: o.scenes.map((x, j) => j === i ? { ...x, art: svg } : x) }));
       } catch { /* skip */ }
     }
@@ -2253,7 +2292,7 @@ function Reader({ s, ch, branch, onClose, accent, rate, style, saveArt, voteCano
     for (let i = 0; i < c.scenes.length; i++) {
       if (c.scenes[i].art) continue;
       setDrawing(i);
-      try { const svg = await drawPanel(c.scenes[i].panel, mergedStyle(s, style), findRefForScene(s, c.scenes[i].panel)); if (svg) saveArt(ci, i, svg); } catch { /* skip */ }
+      try { const svg = await drawPanel(c.scenes[i].panel, mergedStyle(s, style), findRefForScene(s, c.scenes[i].panel), s.styleRefImage); if (svg) saveArt(ci, i, svg); } catch { /* skip */ }
     }
     setDrawing(-1);
   };
@@ -3520,7 +3559,7 @@ function Poster({ close, accent, series, style, say, spend }) {
         tag = r.trim().replace(/^["']|["']$/g, "");
       }
       const desc = `Poster key art for "${s.title}": ${s.synopsis} Dramatic, striking, vertical composition, main character in focus.`;
-      const art = await drawPanel(desc, mergedStyle(s, style), findRefForScene(s, desc) || s.lore.chars.find((c) => c.art && !isSvgArt(c.art))?.art || null);
+      const art = await drawPanel(desc, mergedStyle(s, style), findRefForScene(s, desc) || s.lore.chars.find((c) => c.art && !isSvgArt(c.art))?.art || null, s.styleRefImage);
       setOut({ art, tag });
     } catch { say(t("gen_failed")); }
     setBusy(false);
