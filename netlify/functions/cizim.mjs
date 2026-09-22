@@ -8,7 +8,10 @@ export default async (req) => {
   // so the base look is authentically webtoon/manga instead of drifting Western-comic.
   // Reference image given -> PuLID (FLUX-based) so the SAME face/character is reused;
   // PuLID can lock identity from a reference photo regardless of which model made it.
-  const modelPath = refImage ? "bytedance/flux-pulid" : "cjwbw/animagine-xl-3.1";
+  // animagine-xl-3.1 is a community model, so it's called with a pinned version hash via
+  // /v1/predictions (the /v1/models/.../predictions name-only shortcut is only reliable
+  // for official Replicate/Black-Forest-Labs models like flux-pulid).
+  const ANIMAGINE_VERSION = "47b1d36d3ce66d22fc7ac0cd68b7bc8c9d9956c76b2d255d8eca4266291a5f37";
 
   const input = refImage
     ? {
@@ -36,17 +39,20 @@ export default async (req) => {
   // IMPORTANT: no "Prefer: wait" here. We return immediately with the prediction id,
   // and the browser polls netlify/functions/cizim-durum until it's ready. This avoids
   // Netlify's ~30s function timeout, since real image generation can take longer than that.
-  const r = await fetch(`https://api.replicate.com/v1/models/${modelPath}/predictions`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${process.env.REPLICATE_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ input }),
-  });
+  const r = refImage
+    ? await fetch(`https://api.replicate.com/v1/models/bytedance/flux-pulid/predictions`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${process.env.REPLICATE_TOKEN}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ input }),
+      })
+    : await fetch(`https://api.replicate.com/v1/predictions`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${process.env.REPLICATE_TOKEN}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ version: ANIMAGINE_VERSION, input }),
+      });
 
   const d = await r.json();
-  console.log("cizim: created prediction, model", modelPath, "status", r.status, d.id || "");
+  console.log("cizim: created prediction, model", refImage ? "flux-pulid" : "animagine-xl-3.1", "status", r.status, d.id || "");
 
   if (!r.ok) {
     console.error("cizim: replicate error", r.status, JSON.stringify(d));
