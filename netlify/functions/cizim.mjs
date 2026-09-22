@@ -1,15 +1,18 @@
 export default async (req) => {
   const { panel, stil, refImage } = await req.json();
 
-  // No reference image -> plain generation (same model as before).
-  // Reference image given -> PuLID, so the SAME face/character is reused.
-  const modelPath = refImage ? "bytedance/flux-pulid" : process.env.REPLICATE_MODEL;
+  const positive = `${panel}. ${stil}. Korean webtoon / manhwa art style, clean anime linework, cel shading, vibrant colors, detailed illustration, masterpiece, best quality.`;
+  const negative = "western comic, marvel style, dc comics, superhero comic, photorealistic, photo, 3d render, western cartoon, low quality, worst quality, blurry, bad anatomy, watermark, text, signature, jpeg artifacts";
 
-  const stylePrompt = `${panel}. ${stil}. Korean webtoon / manhwa illustration style: clean bold black linework, cel-shaded flat colors, dramatic screen-tone shading, vibrant stylized digital comic art, 2D illustration. Absolutely NOT a photograph, NOT photorealistic, NOT 3D render.`;
+  // No reference image -> a real anime/manhwa-trained model (not general-purpose FLUX),
+  // so the base look is authentically webtoon/manga instead of drifting Western-comic.
+  // Reference image given -> PuLID (FLUX-based) so the SAME face/character is reused;
+  // PuLID can lock identity from a reference photo regardless of which model made it.
+  const modelPath = refImage ? "bytedance/flux-pulid" : "cjwbw/animagine-xl-3.1";
 
   const input = refImage
     ? {
-        prompt: stylePrompt,
+        prompt: positive,
         main_face_image: refImage,
         width: 800,
         height: 1200,
@@ -22,8 +25,12 @@ export default async (req) => {
         output_format: "webp",
       }
     : {
-        prompt: stylePrompt,
-        aspect_ratio: "2:3",
+        prompt: positive,
+        negative_prompt: negative,
+        width: 896,
+        height: 1152,
+        num_inference_steps: 30,
+        guidance_scale: 7,
       };
 
   // IMPORTANT: no "Prefer: wait" here. We return immediately with the prediction id,

@@ -1082,7 +1082,7 @@ export default function StoryLoom() {
     const branch = {
       id: uid(), by: "You", title: p.title, ch: 1, fid: p.fid, aiAxes: p.aiAxes, votes: 0,
       mine: true, from: p.from, reviews: [], canonYes: 0, canonNo: 0,
-      chapters: [{ n: p.from || chNo, title: p.title, fid: p.fid, scenes: p.scenes || [] }],
+      chapters: [{ n: p.from || chNo, title: p.title, fid: p.fid, scenes: p.scenes || [], content: p.content || "" }],
     };
     return { ...x, branches: [branch, ...x.branches], lore: { chars, rules, threads, log } };
   }));
@@ -1106,7 +1106,7 @@ export default function StoryLoom() {
       ...x,
       branches: x.branches.map((b) => b.id !== bid ? b : {
         ...b, ch: (b.chapters?.length || 0) + 1,
-        chapters: [...(b.chapters || []), { n: chNo, title: p.title, fid: p.fid, scenes: p.scenes || [] }],
+        chapters: [...(b.chapters || []), { n: chNo, title: p.title, fid: p.fid, scenes: p.scenes || [], content: p.content || "" }],
       }),
       lore: { chars, rules, threads, log },
     };
@@ -1894,7 +1894,7 @@ function Forge({ s, from, branch, close, coins, spend, say, accent, commit, appe
   const nextNo = branch ? (prev?.n || s.chapters) + 1 : s.chapters + 1;
   const cost = mode === "basic" ? P.chapter : Math.min(400,
     P.advBase + panels * 8 + focus.length * 10 + threads.length * 15 + newChars.length * 20 + newRules.length * 20 + custom.length * 15);
-  const drawCost = () => out.scenes.filter((x) => !x.art).length * P.panel;
+  const drawCost = () => (out?.scenes || []).filter((x) => !x.art).length * P.panel;
   const useGuild = payGuild && guild && guild.pool >= cost;
 
   const addCustom = () => {
@@ -1906,7 +1906,7 @@ function Forge({ s, from, branch, close, coins, spend, say, accent, commit, appe
     ? `This is your branch "${branch.title}". Write chapter ${nextNo}.
 
 PREVIOUS CHAPTER (${prev?.n} — "${prev?.title}"):
-${(prev?.scenes || []).map((x) => x.metin || x.text).join(" ")}
+${prev?.content || (prev?.scenes || []).map((x) => x.metin || x.text).join(" ")}
 
 Continue seamlessly from there.`
     : from
@@ -1936,7 +1936,7 @@ Continue seamlessly from there.`
     else if (!spend(cost)) return;
     setBusy(true); setErr(null); setOut(null);
     try {
-      const txt = await ask(`You are a ${s.type} writer. For the series "${s.title}": ${target}
+      const txt = await ask(isComic ? `You are a ${s.type} writer. For the series "${s.title}": ${target}
 ${langLine(lang)}
 
 SYNOPSIS: ${s.synopsis}
@@ -1946,13 +1946,26 @@ SETTINGS:
 ${spec()}
 
 Return ONLY this JSON, no markdown, no backticks:
-{"title":"chapter title","scenes":[{"panel":"one-sentence framing direction","bubbles":[{"speaker":"character name, or empty for none","type":"speech | thought | shout | sfx","text":"dialogue, thought, or a short SFX word like CRASH / BOOM","pos":"tl | tr | bl | br | tc | bc | c"}],"text":"${isComic ? "OPTIONAL short caption, max ONE short sentence, empty string if the panel speaks for itself through art+bubbles alone" : "narration, 2-3 sentences"}"}],"scores":{"fid":0-100,"char":0-100,"pace":0-100,"dial":0-100,"orig":0-100},"why":"one sentence justifying the scores","breaks":["any world rule you broke, else empty array"],"note":"one sentence of new permanent canon, or empty string"}
+{"title":"chapter title","scenes":[{"panel":"one-sentence framing direction","bubbles":[{"speaker":"character name, or empty for none","type":"speech | thought | shout | sfx","text":"dialogue, thought, or a short SFX word like CRASH / BOOM","pos":"tl | tr | bl | br | tc | bc | c"}],"text":"OPTIONAL short caption, max ONE short sentence, empty string if the panel speaks for itself through art+bubbles alone"}],"scores":{"fid":0-100,"char":0-100,"pace":0-100,"dial":0-100,"orig":0-100},"why":"one sentence justifying the scores","breaks":["any world rule you broke, else empty array"],"note":"one sentence of new permanent canon, or empty string"}
 "bubbles" can be an empty array for a quiet panel, or several for a busy one. Use "sfx" sparingly for real impact moments (an impact, a door slam, a gasp) — short punchy words only, no speaker. Vary "pos" so bubbles don't stack on top of each other.
-${isComic ? "This is a " + s.type + " — a VISUAL medium. Tell the story almost entirely through \"panel\" framing and \"bubbles\" (dialogue, thought, SFX). Keep \"text\" empty or near-empty on most panels — it is a rare caption, never a narration paragraph." : ""}
-Exactly ${mode === "basic" ? 4 : panels} scenes. Score honestly — don't flatter yourself; mark weaknesses down.`);
+This is a ${s.type} — a VISUAL medium. Tell the story almost entirely through "panel" framing and "bubbles" (dialogue, thought, SFX). Keep "text" empty or near-empty on most panels — it is a rare caption, never a narration paragraph.
+Exactly ${mode === "basic" ? 4 : panels} scenes. Score honestly — don't flatter yourself; mark weaknesses down.`
+        : `You are a novelist. For the series "${s.title}": ${target}
+${langLine(lang)}
+
+SYNOPSIS: ${s.synopsis}
+${loreText(s)}
+
+SETTINGS:
+${spec()}
+
+Return ONLY this JSON, no markdown, no backticks:
+{"title":"chapter title","content":"the full chapter, written as continuous prose across several paragraphs (separate paragraphs with a blank line) — real novel writing, not a panel-by-panel breakdown, no stage directions","scores":{"fid":0-100,"char":0-100,"pace":0-100,"dial":0-100,"orig":0-100},"why":"one sentence justifying the scores","breaks":["any world rule you broke, else empty array"],"note":"one sentence of new permanent canon, or empty string"}
+Write a real prose chapter matching the requested length. Score honestly — don't flatter yourself; mark weaknesses down.`);
       const o = asJSON(txt);
       o.scores = o.scores || { fid: 80, char: 80, pace: 80, dial: 80, orig: 80 };
       o.total = avgOf(o.scores);
+      if (!isComic) o.scenes = [];
       setOut(o);
     } catch { setErr(t("gen_failed")); }
     setBusy(false);
@@ -1963,11 +1976,36 @@ Exactly ${mode === "basic" ? 4 : panels} scenes. Score honestly — don't flatte
       title: out.title, fid: out.scores.fid, aiAxes: out.scores, from,
       chars: mode === "adv" ? newChars : [], rules: mode === "adv" ? newRules : [],
       resolved: mode === "adv" ? threads : [], note: out.note || "",
-      scenes: out.scenes.map((x) => ({ panel: x.panel, bubbles: x.bubbles || (x.line ? [{ speaker: "", type: "speech", text: x.line, pos: "bc" }] : []), metin: x.text, art: x.art })),
+      content: isComic ? "" : (out.content || ""),
+      scenes: isComic ? out.scenes.map((x) => ({ panel: x.panel, bubbles: x.bubbles || (x.line ? [{ speaker: "", type: "speech", text: x.line, pos: "bc" }] : []), metin: x.text, art: x.art })) : [],
     };
     if (branch) appendChapter(s.id, branch.id, payload); else commit(s.id, payload);
     if (guild && guildProgress) guildProgress(out.title);
     setPosted(true);
+  };
+
+  const toWebtoon = async () => {
+    if (!out?.content) return;
+    setBusy(true);
+    try {
+      const r = await ask(`Turn this prose into webtoon panels. ${langLine(lang)}
+
+TEXT:
+${out.content.slice(0, 2500)}
+
+Return ONLY this JSON, no markdown:
+{"panels":[{"note":"visual framing direction, one sentence","line":"the dialogue spoken in the panel, or empty string"}]}
+Between 5 and 9 panels. Keep the mood of the text.`);
+      const o = asJSON(r);
+      openEditor({
+        title: out.title, hue: s.hue,
+        panels: o.panels.map((p, i) => ({
+          id: uid(), h: 240 + (i % 3) * 60, hue: s.hue + i * 20, note: p.note,
+          els: p.line ? [{ id: uid(), type: "bubble", text: p.line, x: 50, y: 25, w: 55, fs: 12 }] : [],
+        })),
+      });
+    } catch { say(t("conv_err")); }
+    setBusy(false);
   };
 
   const drawAll = async () => {
@@ -2038,15 +2076,21 @@ Exactly ${mode === "basic" ? 4 : panels} scenes. Score honestly — don't flatte
             </div>
           )}
 
-          <button onClick={drawAll} disabled={drawing >= 0 || drawCost() === 0} className="btn-ghost w-full mt-4"
-            style={{ borderColor: drawCost() ? T.gold : T.line, color: drawCost() ? T.gold : T.muted }}>
-            {drawing >= 0 ? `${t("drawing_p")} ${drawing + 1}/${out.scenes.length}…`
-              : drawCost() === 0 ? `✓ ${style.n[lang] || style.n.en}`
-                : `${t("draw_panels")} · ◈ ${drawCost()}`}
-          </button>
+          {isComic && (
+            <button onClick={drawAll} disabled={drawing >= 0 || drawCost() === 0} className="btn-ghost w-full mt-4"
+              style={{ borderColor: drawCost() ? T.gold : T.line, color: drawCost() ? T.gold : T.muted }}>
+              {drawing >= 0 ? `${t("drawing_p")} ${drawing + 1}/${out.scenes.length}…`
+                : drawCost() === 0 ? `✓ ${style.n[lang] || style.n.en}`
+                  : `${t("draw_panels")} · ◈ ${drawCost()}`}
+            </button>
+          )}
 
           <div className="mt-4">
-            {out.scenes.map((p, i) => <PanelBlock key={i} s={s} p={p} i={i} drawing={drawing} h={s.type !== "Novel" ? 420 : 280} />)}
+            {isComic
+              ? out.scenes.map((p, i) => <PanelBlock key={i} s={s} p={p} i={i} drawing={drawing} h={420} />)
+              : (out.content || "").split(/\n\s*\n/).map((para, i) => (
+                <p key={i} style={{ fontSize: 15, lineHeight: 1.75, marginBottom: 14 }}>{para}</p>
+              ))}
           </div>
 
           {posted ? (
@@ -2056,7 +2100,7 @@ Exactly ${mode === "basic" ? 4 : panels} scenes. Score honestly — don't flatte
                 {(mode === "adv" ? newChars.length + newRules.length : 0) + (out.note ? 1 : 0)} {t("facts_written")}
                 {mode === "adv" && threads.length > 0 ? `, ${threads.length} ${t("threads_closed")}` : ""}.
               </div>
-              <button onClick={toPanels} className="btn" style={{ background: accent }}>{t("to_panels")}</button>
+              <button onClick={isComic ? toPanels : toWebtoon} disabled={busy} className="btn" style={{ background: accent, opacity: busy ? .7 : 1 }}>{busy ? t("conv_busy") : t("to_panels")}</button>
               <button onClick={close} className="btn-ghost mt-2 w-full">{t("close")}</button>
             </>
           ) : (
@@ -2067,7 +2111,7 @@ Exactly ${mode === "basic" ? 4 : panels} scenes. Score honestly — don't flatte
                   {branch ? t("add_to_branch") : t("publish")}
                 </button>
               </div>
-              <button onClick={toPanels} className="btn-ghost mt-2 w-full" style={{ borderColor: T.gold, color: T.gold }}>{t("to_panels")}</button>
+              <button onClick={isComic ? toPanels : toWebtoon} disabled={busy} className="btn-ghost mt-2 w-full" style={{ borderColor: T.gold, color: T.gold, opacity: busy ? .7 : 1 }}>{busy ? t("conv_busy") : t("to_panels")}</button>
             </>
           )}
         </div>
@@ -2250,12 +2294,20 @@ function Reader({ s, ch, branch, onClose, accent, rate, style, saveArt, voteCano
           {branch && c ? (
             <>
               <h1 style={{ fontSize: 22, fontWeight: 900, marginBottom: 14 }}>{c.title}</h1>
-              {cost > 0 && (
-                <button onClick={drawAll} disabled={drawing >= 0} className="btn-ghost w-full mb-5" style={{ borderColor: T.gold, color: T.gold }}>
-                  {drawing >= 0 ? `${t("drawing_p")} ${drawing + 1}/${c.scenes.length}…` : `${t("draw_panels")} · ◈ ${cost}`}
-                </button>
+              {c.content ? (
+                c.content.split(/\n\s*\n/).map((para, i) => (
+                  <p key={i} style={{ fontSize: 15, lineHeight: 1.8, marginBottom: 16 }}>{para}</p>
+                ))
+              ) : (
+                <>
+                  {cost > 0 && (
+                    <button onClick={drawAll} disabled={drawing >= 0} className="btn-ghost w-full mb-5" style={{ borderColor: T.gold, color: T.gold }}>
+                      {drawing >= 0 ? `${t("drawing_p")} ${drawing + 1}/${c.scenes.length}…` : `${t("draw_panels")} · ◈ ${cost}`}
+                    </button>
+                  )}
+                  {c.scenes.map((p, i) => <PanelBlock key={i} s={s} p={p} i={i} drawing={drawing} h={480} />)}
+                </>
               )}
-              {c.scenes.map((p, i) => <PanelBlock key={i} s={s} p={p} i={i} drawing={drawing} h={s.type !== "Novel" ? 480 : 340} />)}
               {ci < chapters.length - 1 && (
                 <button onClick={() => { setCi(ci + 1); window.scrollTo(0, 0); }} className="btn mb-4" style={{ background: accent }}>{t("next_ch")}</button>
               )}
