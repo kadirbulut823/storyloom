@@ -5,12 +5,14 @@ export default async (req) => {
   // Reference image given -> PuLID, so the SAME face/character is reused.
   const modelPath = refImage ? "bytedance/flux-pulid" : process.env.REPLICATE_MODEL;
 
+  const stylePrompt = `${panel}. ${stil}. Korean webtoon / manhwa illustration style: clean bold black linework, cel-shaded flat colors, dramatic screen-tone shading, vibrant stylized digital comic art, 2D illustration. Absolutely NOT a photograph, NOT photorealistic, NOT 3D render.`;
+
   const input = refImage
     ? {
-        prompt: `${panel}. Art style: ${stil}. manga panel, comic illustration`,
+        prompt: stylePrompt,
         main_face_image: refImage,
-        width: 1024,
-        height: 683,
+        width: 800,
+        height: 1200,
         num_steps: 20,
         start_step: 0,
         guidance_scale: 4,
@@ -20,8 +22,8 @@ export default async (req) => {
         output_format: "webp",
       }
     : {
-        prompt: `${panel}. Art style: ${stil}. manga panel, comic illustration`,
-        aspect_ratio: "3:2",
+        prompt: stylePrompt,
+        aspect_ratio: "2:3",
       };
 
   // IMPORTANT: no "Prefer: wait" here. We return immediately with the prediction id,

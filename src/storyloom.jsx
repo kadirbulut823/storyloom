@@ -89,6 +89,10 @@ const STR = {
     retcon_hint: "Pick the chapter where it went wrong. The story gets rewoven from there.", retcon_btn: "⟲ Branch here",
     mem_core: "Memory core", live: "LIVE", mem_sub_c: "characters", mem_sub_r: "rules", mem_sub_o: "open threads", mem_sub_x: "closed",
     mem_note: "Every chapter you publish is written back here. Future generations remember it.",
+    style_ref_t: "Original Art Reference", style_ref_learned: "LEARNED",
+    style_ref_note: "Upload 1-3 images from the original series. The AI studies them once and reuses that exact style for every future panel.",
+    style_ref_pick: "Choose images", style_ref_replace: "Upload different reference art",
+    style_ref_busy: "Studying the style…", style_ref_go: "Learn this style",
     chars_k: "CHARACTERS · tap to talk", rules_k: "WORLD RULES", threads_k: "THREADS", memlog_k: "MEMORY LOG",
     draw_it: "✎ draw", talk: "💬 TALK", canon_src: "CANON", speak_ph: "Ask something…", thinking: "is thinking…",
     silence: "…silence. Try again.", looks_at_you: "looks at you.",
@@ -112,6 +116,10 @@ const STR = {
     retcon_hint: "Gidişatı beğenmediğin bölümü seç, oradan itibaren hikâye yeniden dokunsun.", retcon_btn: "⟲ Buradan sap",
     mem_core: "Hafıza çekirdeği", live: "CANLI", mem_sub_c: "karakter", mem_sub_r: "kural", mem_sub_o: "açık iplik", mem_sub_x: "kapanmış",
     mem_note: "Yayımladığın her bölüm buraya işlenir. Sonraki üretimler bunu hatırlar.",
+    style_ref_t: "Orijinal Çizim Referansı", style_ref_learned: "ÖĞRENİLDİ",
+    style_ref_note: "Orijinal seriden 1-3 görsel yükle. Yapay zeka bunları bir kez inceler ve bundan sonraki tüm panellerde aynı stili kullanır.",
+    style_ref_pick: "Görsel seç", style_ref_replace: "Farklı referans görsel yükle",
+    style_ref_busy: "Stil inceleniyor…", style_ref_go: "Bu stili öğren",
     chars_k: "KARAKTERLER · dokun, konuş", rules_k: "DÜNYA KURALLARI", threads_k: "İPLİKLER", memlog_k: "HAFIZA GÜNLÜĞÜ",
     draw_it: "✎ çiz", talk: "💬 KONUŞ", canon_src: "CANON", speak_ph: "Bir şey sor…", thinking: "düşünüyor…",
     silence: "…sessizlik. Tekrar dene.", looks_at_you: "sana bakıyor.",
@@ -567,6 +575,36 @@ async function ask(prompt) {
   const d = await res.json();
   return (d.content || []).map((b) => b.text || "").join("\n");
 }
+
+/* Reads 1-3 uploaded reference images from an abandoned series' original art and turns them
+   into a reusable text style-fingerprint, so every future panel keeps the same look. */
+async function analyzeStyle(imageDataUrls) {
+  const content = [
+    ...imageDataUrls.map((durl) => {
+      const m = durl.match(/^data:([^;]+);base64,(.+)$/);
+      return { type: "image", source: { type: "base64", media_type: (m && m[1]) || "image/jpeg", data: (m && m[2]) || "" } };
+    }),
+    {
+      type: "text",
+      text: `You are analyzing reference art from a manga/manhwa/webtoon series so another AI illustrator can continue it in the exact same visual style.
+Describe, in one dense paragraph (120-180 words), the precise visual style: line weight and inking, color palette and saturation, shading/screentone technique, panel framing conventions, character proportions, typical lighting, and overall mood. Write it as a direct instruction for an image-generation prompt (e.g. "clean thin black linework, muted pastel palette, soft cel-shading..."). Do not mention specific character names or scene content. Output only the style description, no preamble, no markdown.`,
+    },
+  ];
+  const res = await fetch("/.netlify/functions/ai", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages: [{ role: "user", content }] }),
+  });
+  if (!res.ok) throw new Error("style analysis failed");
+  const d = await res.json();
+  return (d.content || []).map((b) => b.text || "").join("\n").trim();
+}
+
+/* Merges a series' learned style-fingerprint (from uploaded original art) into whatever
+   generic art style is currently selected, so panels for THIS series stay on-model. */
+function mergedStyle(s, style) {
+  if (!s?.styleDescription) return style;
+  return { ...style, p: `${s.styleDescription} ${style.p}` };
+}
 const asJSON = (t) => JSON.parse(t.replace(/```json|```/g, "").trim());
 const langLine = (lang) => (lang === "tr" ? "Türkçe yaz." : "Write in English.");
 
@@ -576,6 +614,100 @@ function ArtLayer({ art }) {
   if (!art) return null;
   if (isSvgArt(art)) return <div style={{ position: "absolute", inset: 0 }} dangerouslySetInnerHTML={{ __html: art }} />;
   return <img src={art} alt="" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />;
+}
+
+/* Renders one scene: real webtoon/manga panels (edge-to-edge art, bubbles, tiny optional caption)
+   for Manga/Manhwa/Webtoon series, or a classic illustrated-novel block (art + prose) for Novel series. */
+function PanelBlock({ s, p, i, drawing, h }) {
+  const isComic = s.type !== "Novel";
+  const bubbles = p.bubbles || ((p.line || p.replik) ? [{ speaker: "", type: "speech", text: p.line || p.replik, pos: "bc" }] : []);
+  const caption = (p.text || p.metin || "").trim();
+  return (
+    <div className={isComic ? "mb-1" : "mb-5"}>
+      <Art svg={p.art} hue={s.hue + i * 20} h={h} note={p.panel} rounded={!isComic}>
+        {drawing === i && (
+          <div className="pulse" style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", background: "rgba(0,0,0,.55)", zIndex: 4 }}>
+            <span className="mono" style={{ fontSize: 10, color: T.gold }}>…</span>
+          </div>
+        )}
+        {isComic && caption && (
+          <div style={{ position: "absolute", top: 10, left: 10, right: 10, background: "rgba(10,7,17,.82)", color: "#fff", fontSize: 11, fontWeight: 600, padding: "7px 10px", borderRadius: 6, lineHeight: 1.4, zIndex: 2 }}>{caption}</div>
+        )}
+        {bubbles.map((b, bi) => <Bubble key={bi} b={b} />)}
+      </Art>
+      {!isComic && caption && <p style={{ fontSize: 14, lineHeight: 1.65, marginTop: 8 }}>{caption}</p>}
+    </div>
+  );
+}
+
+/* ---------------- webtoon/manga bubbles: speech, thought, shout, sfx — overlaid on the panel art ---------------- */
+const BUBBLE_POS = {
+  tl: { top: 10, left: 10 }, tr: { top: 10, right: 10 },
+  bl: { bottom: 10, left: 10 }, br: { bottom: 10, right: 10 },
+  tc: { top: 10, left: "50%", transform: "translateX(-50%)" },
+  bc: { bottom: 10, left: "50%", transform: "translateX(-50%)" },
+  c: { top: "50%", left: "50%", transform: "translate(-50%,-50%)" },
+};
+function Bubble({ b }) {
+  const pos = BUBBLE_POS[b.pos] || BUBBLE_POS.bc;
+  const tailSide = (b.pos || "bc").includes("l") ? "left" : (b.pos || "bc").includes("r") ? "right" : "center";
+
+  if (b.type === "sfx") {
+    return (
+      <div style={{
+        position: "absolute", ...pos, maxWidth: "80%", zIndex: 3,
+        fontFamily: "sans-serif", fontWeight: 900, fontSize: 26, fontStyle: "italic",
+        letterSpacing: "0.02em", color: T.gold, transform: `${pos.transform || ""} rotate(-6deg)`.trim(),
+        textShadow: "-2px -2px 0 #000,2px -2px 0 #000,-2px 2px 0 #000,2px 2px 0 #000,0 0 14px rgba(0,0,0,.5)",
+        pointerEvents: "none", textAlign: "center",
+      }}>{b.text}</div>
+    );
+  }
+
+  const isThought = b.type === "thought";
+  const isShout = b.type === "shout";
+
+  return (
+    <div style={{ position: "absolute", ...pos, maxWidth: "68%", zIndex: 3, textAlign: "center" }}>
+      {b.speaker && (
+        <div className="mono" style={{ fontSize: 8, color: T.gold, marginBottom: 3, letterSpacing: ".08em", fontWeight: 800 }}>{b.speaker.toUpperCase()}</div>
+      )}
+      <div style={{
+        position: "relative",
+        background: isShout ? T.gold : "#fff",
+        color: "#111",
+        fontWeight: isShout ? 900 : 700,
+        fontStyle: isThought ? "italic" : "normal",
+        fontSize: isShout ? 13 : 12,
+        textTransform: isShout ? "uppercase" : "none",
+        padding: "8px 13px",
+        borderRadius: isThought ? 20 : isShout ? 4 : 14,
+        border: isThought ? "2px dashed rgba(0,0,0,.35)" : isShout ? "2px solid #111" : "none",
+        boxShadow: "0 3px 10px rgba(0,0,0,.35)",
+        lineHeight: 1.35,
+      }}>
+        {b.text}
+        {!isThought && (
+          <div style={{
+            position: "absolute", bottom: -7,
+            left: tailSide === "left" ? 16 : tailSide === "right" ? undefined : "50%",
+            right: tailSide === "right" ? 16 : undefined,
+            transform: tailSide === "center" ? "translateX(-50%) rotate(45deg)" : "rotate(45deg)",
+            width: 12, height: 12,
+            background: isShout ? T.gold : "#fff",
+            borderRight: isShout ? "2px solid #111" : "none",
+            borderBottom: isShout ? "2px solid #111" : "none",
+          }} />
+        )}
+        {isThought && (
+          <>
+            <div style={{ position: "absolute", bottom: -12, left: tailSide === "left" ? 20 : tailSide === "right" ? undefined : "50%", right: tailSide === "right" ? 20 : undefined, width: 9, height: 9, borderRadius: 99, background: "#fff", border: "2px dashed rgba(0,0,0,.35)" }} />
+            <div style={{ position: "absolute", bottom: -20, left: tailSide === "left" ? 12 : tailSide === "right" ? undefined : "50%", right: tailSide === "right" ? 12 : undefined, width: 5, height: 5, borderRadius: 99, background: "#fff", border: "2px dashed rgba(0,0,0,.35)" }} />
+          </>
+        )}
+      </div>
+    </div>
+  );
 }
 
 /* ---------------- real image generation (Replicate, via serverless proxy) ----------------
@@ -748,15 +880,15 @@ function Sheet({ children, close }) {
     </div>
   );
 }
-function Art({ svg, hue, h, note, children }) {
+function Art({ svg, hue, h, note, children, rounded = true }) {
   if (svg) return (
-    <div className="relative overflow-hidden" style={{ height: h, borderRadius: 10, background: "#000" }}>
+    <div className="relative overflow-hidden" style={{ height: h, borderRadius: rounded ? 10 : 0, background: "#000" }}>
       <ArtLayer art={svg} />
       {children}
     </div>
   );
   return (
-    <div className="relative overflow-hidden" style={{ ...cover(hue, h), borderRadius: 10, display: "grid", placeItems: "center", padding: 16 }}>
+    <div className="relative overflow-hidden" style={{ ...cover(hue, h), borderRadius: rounded ? 10 : 0, display: "grid", placeItems: "center", padding: 16 }}>
       {note && <span className="mono" style={{ fontSize: 10, color: "rgba(255,255,255,.4)", textAlign: "center", lineHeight: 1.6 }}>{note}</span>}
       {children}
     </div>
@@ -990,6 +1122,7 @@ export default function StoryLoom() {
   const saveCharArt = (sid, cid, svg) => setSeries((prev) => prev.map((x) => x.id !== sid ? x : {
     ...x, lore: { ...x.lore, chars: x.lore.chars.map((c) => c.id === cid ? { ...c, art: svg } : c) },
   }));
+  const saveStyleDesc = (sid, desc) => setSeries((prev) => prev.map((x) => x.id !== sid ? x : { ...x, styleDescription: desc }));
 
   const rate = (sid, bid, rv) => {
     setSeries((prev) => prev.map((x) => x.id !== sid ? x : {
@@ -1126,7 +1259,7 @@ export default function StoryLoom() {
 
   const body = s ? <SeriesView s={s} back={() => setOpenId(null)} read={setReader} coins={coins} spend={spend}
     say={say} accent={accent} commit={commit} appendChapter={appendChapter} openEditor={setEditor}
-    style={style} saveCharArt={saveCharArt} guild={guild} spendGuild={spendGuild} guildProgress={guildProgress} />
+    style={style} saveCharArt={saveCharArt} saveStyleDesc={saveStyleDesc} guild={guild} spendGuild={spendGuild} guildProgress={guildProgress} />
     : tab === "home" ? <Home go={go} series={series} open={setOpenId} claimed={claimed} accent={accent}
       openEditor={setEditor} openConv={() => setConv(true)} openAdd={() => setAdding(true)}
       openStyles={() => setStyleLib(true)} openPoster={() => setPoster(true)} openSearch={() => setSearching(true)}
@@ -1405,7 +1538,7 @@ function Search({ close, accent, series, open }) {
 }
 
 /* ---------------- SERIES ---------------- */
-function SeriesView({ s, back, read, coins, spend, say, accent, commit, appendChapter, openEditor, style, saveCharArt, guild, spendGuild, guildProgress }) {
+function SeriesView({ s, back, read, coins, spend, say, accent, commit, appendChapter, openEditor, style, saveCharArt, saveStyleDesc, guild, spendGuild, guildProgress }) {
   const { t } = useT();
   const [tab, setTab] = useState("branches");
   const [forge, setForge] = useState(null);
@@ -1458,7 +1591,7 @@ function SeriesView({ s, back, read, coins, spend, say, accent, commit, appendCh
             <BranchTree s={s} accent={accent} onOpen={(b) => read({ sid: s.id, bid: b.id })} onFork={() => setForge({})} />
           </>
         )}
-        {tab === "memory" && <Memory s={s} accent={accent} style={style} saveCharArt={saveCharArt} say={say} spend={spend} />}
+        {tab === "memory" && <Memory s={s} accent={accent} style={style} saveCharArt={saveCharArt} saveStyleDesc={saveStyleDesc} say={say} spend={spend} />}
         {tab === "chapters" && (
           <>
             <div className="card p-3 mb-3" style={{ fontSize: 12, color: T.muted, lineHeight: 1.5, borderLeft: `3px solid ${T.hanko}` }}>
@@ -1492,10 +1625,12 @@ function SeriesView({ s, back, read, coins, spend, say, accent, commit, appendCh
 }
 
 /* ---------------- MEMORY ---------------- */
-function Memory({ s, accent, style, saveCharArt, say, spend }) {
+function Memory({ s, accent, style, saveCharArt, saveStyleDesc, say, spend }) {
   const { t } = useT();
   const [chat, setChat] = useState(null);
   const [drawing, setDrawing] = useState(null);
+  const [styleFiles, setStyleFiles] = useState([]);
+  const [analyzing, setAnalyzing] = useState(false);
   const open = s.lore.threads.filter((x) => x.open);
   const closed = s.lore.threads.filter((x) => !x.open);
 
@@ -1504,10 +1639,35 @@ function Memory({ s, accent, style, saveCharArt, say, spend }) {
     if (!spend(P.portrait)) return;
     setDrawing(c.id);
     try {
-      const svg = await drawPanel(`Character portrait: ${c.n}. ${c.d} Chest-up, face in focus, dramatic lighting.`, style);
+      const svg = await drawPanel(`Character portrait: ${c.n}. ${c.d} Chest-up, face in focus, dramatic lighting.`, mergedStyle(s, style));
       if (svg) saveCharArt(s.id, c.id, svg); else say(t("ed_nodraw"));
     } catch { say(t("ed_nodraw")); }
     setDrawing(null);
+  };
+
+  const fileToDataUrl = (file) => new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+
+  const onPickStyleFiles = async (e) => {
+    const files = Array.from(e.target.files || []).slice(0, 3);
+    if (!files.length) return;
+    const urls = await Promise.all(files.map(fileToDataUrl));
+    setStyleFiles(urls);
+  };
+
+  const runStyleAnalysis = async () => {
+    if (!styleFiles.length) return;
+    setAnalyzing(true);
+    try {
+      const desc = await analyzeStyle(styleFiles);
+      if (desc) { saveStyleDesc(s.id, desc); setStyleFiles([]); }
+      else say(t("ed_nodraw"));
+    } catch { say(t("ed_nodraw")); }
+    setAnalyzing(false);
   };
 
   const Src = ({ src }) => (
@@ -1520,6 +1680,44 @@ function Memory({ s, accent, style, saveCharArt, say, spend }) {
 
   return (
     <div className="fade">
+      <div className="card p-4 mb-4" style={{ borderColor: accent }}>
+        <div className="flex justify-between items-center">
+          <span style={{ fontSize: 13, fontWeight: 800 }}>{t("style_ref_t")}</span>
+          {s.styleDescription && <span className="mono" style={{ fontSize: 10, color: accent }}>● {t("style_ref_learned")}</span>}
+        </div>
+        {s.styleDescription ? (
+          <>
+            <div style={{ fontSize: 11, color: T.muted, marginTop: 8, lineHeight: 1.55 }}>{s.styleDescription}</div>
+            <label className="btn-ghost mt-3" style={{ display: "inline-block", cursor: "pointer", fontSize: 11 }}>
+              {t("style_ref_replace")}
+              <input type="file" accept="image/*" multiple hidden onChange={onPickStyleFiles} />
+            </label>
+          </>
+        ) : (
+          <>
+            <div style={{ fontSize: 11, color: T.muted, marginTop: 6, lineHeight: 1.55 }}>
+              {t("style_ref_note")}
+            </div>
+            <label className="btn-ghost mt-3" style={{ display: "inline-block", cursor: "pointer", fontSize: 11 }}>
+              {t("style_ref_pick")}
+              <input type="file" accept="image/*" multiple hidden onChange={onPickStyleFiles} />
+            </label>
+          </>
+        )}
+        {styleFiles.length > 0 && (
+          <div className="mt-3">
+            <div className="flex gap-2 mb-2">
+              {styleFiles.map((u, i) => (
+                <img key={i} src={u} alt="" style={{ width: 52, height: 52, objectFit: "cover", borderRadius: 8 }} />
+              ))}
+            </div>
+            <button onClick={runStyleAnalysis} disabled={analyzing} className="btn" style={{ background: analyzing ? T.panel2 : accent, opacity: analyzing ? .7 : 1, fontSize: 12 }}>
+              {analyzing ? (t("style_ref_busy")) : (t("style_ref_go"))}
+            </button>
+          </div>
+        )}
+      </div>
+
       <div className="card p-4 mb-4" style={{ borderColor: accent }}>
         <div className="flex justify-between items-center">
           <span style={{ fontSize: 13, fontWeight: 800 }}>{t("mem_core")}</span>
@@ -1731,6 +1929,8 @@ Continue seamlessly from there.`
       adv ? `Author note: ${adv}` : "",
     ].filter(Boolean).join("\n");
 
+  const isComic = s.type !== "Novel";
+
   const run = async () => {
     if (useGuild) spendGuild(cost);
     else if (!spend(cost)) return;
@@ -1746,7 +1946,9 @@ SETTINGS:
 ${spec()}
 
 Return ONLY this JSON, no markdown, no backticks:
-{"title":"chapter title","scenes":[{"panel":"one-sentence framing direction","line":"short dialogue in the panel, or empty","text":"narration, 2-3 sentences"}],"scores":{"fid":0-100,"char":0-100,"pace":0-100,"dial":0-100,"orig":0-100},"why":"one sentence justifying the scores","breaks":["any world rule you broke, else empty array"],"note":"one sentence of new permanent canon, or empty string"}
+{"title":"chapter title","scenes":[{"panel":"one-sentence framing direction","bubbles":[{"speaker":"character name, or empty for none","type":"speech | thought | shout | sfx","text":"dialogue, thought, or a short SFX word like CRASH / BOOM","pos":"tl | tr | bl | br | tc | bc | c"}],"text":"${isComic ? "OPTIONAL short caption, max ONE short sentence, empty string if the panel speaks for itself through art+bubbles alone" : "narration, 2-3 sentences"}"}],"scores":{"fid":0-100,"char":0-100,"pace":0-100,"dial":0-100,"orig":0-100},"why":"one sentence justifying the scores","breaks":["any world rule you broke, else empty array"],"note":"one sentence of new permanent canon, or empty string"}
+"bubbles" can be an empty array for a quiet panel, or several for a busy one. Use "sfx" sparingly for real impact moments (an impact, a door slam, a gasp) — short punchy words only, no speaker. Vary "pos" so bubbles don't stack on top of each other.
+${isComic ? "This is a " + s.type + " — a VISUAL medium. Tell the story almost entirely through \"panel\" framing and \"bubbles\" (dialogue, thought, SFX). Keep \"text\" empty or near-empty on most panels — it is a rare caption, never a narration paragraph." : ""}
 Exactly ${mode === "basic" ? 4 : panels} scenes. Score honestly — don't flatter yourself; mark weaknesses down.`);
       const o = asJSON(txt);
       o.scores = o.scores || { fid: 80, char: 80, pace: 80, dial: 80, orig: 80 };
@@ -1761,7 +1963,7 @@ Exactly ${mode === "basic" ? 4 : panels} scenes. Score honestly — don't flatte
       title: out.title, fid: out.scores.fid, aiAxes: out.scores, from,
       chars: mode === "adv" ? newChars : [], rules: mode === "adv" ? newRules : [],
       resolved: mode === "adv" ? threads : [], note: out.note || "",
-      scenes: out.scenes.map((x) => ({ panel: x.panel, replik: x.line, metin: x.text, art: x.art })),
+      scenes: out.scenes.map((x) => ({ panel: x.panel, bubbles: x.bubbles || (x.line ? [{ speaker: "", type: "speech", text: x.line, pos: "bc" }] : []), metin: x.text, art: x.art })),
     };
     if (branch) appendChapter(s.id, branch.id, payload); else commit(s.id, payload);
     if (guild && guildProgress) guildProgress(out.title);
@@ -1775,7 +1977,7 @@ Exactly ${mode === "basic" ? 4 : panels} scenes. Score honestly — don't flatte
     for (const [sc, i] of todo) {
       setDrawing(i);
       try {
-        const svg = await drawPanel(sc.panel, style, findRefForScene(s, sc.panel));
+        const svg = await drawPanel(sc.panel, mergedStyle(s, style), findRefForScene(s, sc.panel));
         if (svg) setOut((o) => ({ ...o, scenes: o.scenes.map((x, j) => j === i ? { ...x, art: svg } : x) }));
       } catch { /* skip */ }
     }
@@ -1784,10 +1986,13 @@ Exactly ${mode === "basic" ? 4 : panels} scenes. Score honestly — don't flatte
 
   const toPanels = () => openEditor({
     title: out.title, hue: s.hue,
-    panels: out.scenes.map((p, i) => ({
-      id: uid(), h: 240 + (i % 3) * 60, hue: s.hue + i * 22, note: p.panel, art: p.art,
-      els: p.line ? [{ id: uid(), type: "bubble", text: p.line, x: 50, y: 22, w: 55, fs: 12 }] : [],
-    })),
+    panels: out.scenes.map((p, i) => {
+      const firstLine = (p.bubbles && p.bubbles[0] && p.bubbles[0].text) || p.line || "";
+      return {
+        id: uid(), h: 240 + (i % 3) * 60, hue: s.hue + i * 22, note: p.panel, art: p.art,
+        els: firstLine ? [{ id: uid(), type: "bubble", text: firstLine, x: 50, y: 22, w: 55, fs: 12 }] : [],
+      };
+    }),
   });
 
   return (
@@ -1841,21 +2046,7 @@ Exactly ${mode === "basic" ? 4 : panels} scenes. Score honestly — don't flatte
           </button>
 
           <div className="mt-4">
-            {out.scenes.map((p, i) => (
-              <div key={i} className="mb-4">
-                <Art svg={p.art} hue={s.hue + i * 22} h={160} note={p.panel}>
-                  {drawing === i && (
-                    <div className="pulse" style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", background: "rgba(0,0,0,.55)" }}>
-                      <span className="mono" style={{ fontSize: 10, color: T.gold }}>{t("drawing_u")}</span>
-                    </div>
-                  )}
-                  {p.line && (
-                    <div style={{ position: "absolute", bottom: 10, left: 12, right: 12, background: "#fff", color: "#111", fontSize: 11, fontWeight: 700, padding: "7px 10px", borderRadius: 12, textAlign: "center" }}>{p.line}</div>
-                  )}
-                </Art>
-                <p style={{ fontSize: 14, lineHeight: 1.65, marginTop: 8 }}>{p.text}</p>
-              </div>
-            ))}
+            {out.scenes.map((p, i) => <PanelBlock key={i} s={s} p={p} i={i} drawing={drawing} h={s.type !== "Novel" ? 420 : 280} />)}
           </div>
 
           {posted ? (
@@ -2018,7 +2209,7 @@ function Reader({ s, ch, branch, onClose, accent, rate, style, saveArt, voteCano
     for (let i = 0; i < c.scenes.length; i++) {
       if (c.scenes[i].art) continue;
       setDrawing(i);
-      try { const svg = await drawPanel(c.scenes[i].panel, style, findRefForScene(s, c.scenes[i].panel)); if (svg) saveArt(ci, i, svg); } catch { /* skip */ }
+      try { const svg = await drawPanel(c.scenes[i].panel, mergedStyle(s, style), findRefForScene(s, c.scenes[i].panel)); if (svg) saveArt(ci, i, svg); } catch { /* skip */ }
     }
     setDrawing(-1);
   };
@@ -2064,21 +2255,7 @@ function Reader({ s, ch, branch, onClose, accent, rate, style, saveArt, voteCano
                   {drawing >= 0 ? `${t("drawing_p")} ${drawing + 1}/${c.scenes.length}…` : `${t("draw_panels")} · ◈ ${cost}`}
                 </button>
               )}
-              {c.scenes.map((p, i) => (
-                <div key={i} className="mb-5">
-                  <Art svg={p.art} hue={s.hue + i * 20} h={200} note={p.panel}>
-                    {drawing === i && (
-                      <div className="pulse" style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", background: "rgba(0,0,0,.55)" }}>
-                        <span className="mono" style={{ fontSize: 10, color: T.gold }}>{t("drawing_u")}</span>
-                      </div>
-                    )}
-                    {p.replik && (
-                      <div style={{ position: "absolute", bottom: 12, left: 14, right: 14, background: "#fff", color: "#111", fontSize: 12, fontWeight: 700, padding: "8px 12px", borderRadius: 14, textAlign: "center" }}>{p.replik}</div>
-                    )}
-                  </Art>
-                  <p style={{ fontSize: 15, lineHeight: 1.7, marginTop: 10 }}>{p.metin}</p>
-                </div>
-              ))}
+              {c.scenes.map((p, i) => <PanelBlock key={i} s={s} p={p} i={i} drawing={drawing} h={s.type !== "Novel" ? 480 : 340} />)}
               {ci < chapters.length - 1 && (
                 <button onClick={() => { setCi(ci + 1); window.scrollTo(0, 0); }} className="btn mb-4" style={{ background: accent }}>{t("next_ch")}</button>
               )}
@@ -3291,7 +3468,7 @@ function Poster({ close, accent, series, style, say, spend }) {
         tag = r.trim().replace(/^["']|["']$/g, "");
       }
       const desc = `Poster key art for "${s.title}": ${s.synopsis} Dramatic, striking, vertical composition, main character in focus.`;
-      const art = await drawPanel(desc, style, findRefForScene(s, desc) || s.lore.chars.find((c) => c.art && !isSvgArt(c.art))?.art || null);
+      const art = await drawPanel(desc, mergedStyle(s, style), findRefForScene(s, desc) || s.lore.chars.find((c) => c.art && !isSvgArt(c.art))?.art || null);
       setOut({ art, tag });
     } catch { say(t("gen_failed")); }
     setBusy(false);
