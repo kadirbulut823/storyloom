@@ -1,8 +1,8 @@
 export default async (req) => {
   const { panel, stil, refImage } = await req.json();
 
-  // No reference image -> exactly the same call as before (unchanged behavior).
-  // Reference image given -> use PuLID so the SAME face/character is reused.
+  // No reference image -> plain generation (same model as before).
+  // Reference image given -> PuLID, so the SAME face/character is reused.
   const modelPath = refImage ? "bytedance/flux-pulid" : process.env.REPLICATE_MODEL;
 
   const input = refImage
@@ -24,46 +24,25 @@ export default async (req) => {
         aspect_ratio: "3:2",
       };
 
+  // IMPORTANT: no "Prefer: wait" here. We return immediately with the prediction id,
+  // and the browser polls netlify/functions/cizim-durum until it's ready. This avoids
+  // Netlify's ~30s function timeout, since real image generation can take longer than that.
   const r = await fetch(`https://api.replicate.com/v1/models/${modelPath}/predictions`, {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${process.env.REPLICATE_TOKEN}`,
       "Content-Type": "application/json",
-      "Prefer": "wait",
     },
     body: JSON.stringify({ input }),
   });
-  console.log("cizim: called model", modelPath, "status", r.status);
 
   const d = await r.json();
+  console.log("cizim: created prediction, model", modelPath, "status", r.status, d.id || "");
 
   if (!r.ok) {
     console.error("cizim: replicate error", r.status, JSON.stringify(d));
-    return Response.json({ error: d.detail || d.error || "Replicate error", raw: d }, { status: r.status });
+    return Response.json({ error: d.detail || d.error || "Replicate error" }, { status: r.status });
   }
 
-  // "Prefer: wait" can still come back "processing" if the model is slow to start — poll briefly.
-  let prediction = d;
-  let attempts = 0;
-  while (
-    prediction?.urls?.get &&
-    prediction.status !== "succeeded" &&
-    prediction.status !== "failed" &&
-    prediction.status !== "canceled" &&
-    attempts < 30
-  ) {
-    await new Promise((res) => setTimeout(res, 1500));
-    const poll = await fetch(prediction.urls.get, {
-      headers: { "Authorization": `Bearer ${process.env.REPLICATE_TOKEN}` },
-    });
-    prediction = await poll.json();
-    attempts++;
-  }
-
-  const output = Array.isArray(prediction.output) ? prediction.output[0] : prediction.output;
-  if (!output) {
-    return Response.json({ error: "no_output", raw: prediction }, { status: 502 });
-  }
-
-  return Response.json({ url: output });
+  return Response.json({ id: d.id, status: d.status });
 };

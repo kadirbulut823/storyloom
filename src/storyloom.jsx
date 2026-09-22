@@ -584,18 +584,26 @@ function ArtLayer({ art }) {
    used the very first time a character is drawn, which then BECOMES their reference. */
 async function drawPanel(desc, style, refImageUrl = null) {
   try {
-    const res = await fetch("/.netlify/functions/cizim", {
+    // Step 1: start the generation — returns immediately with a prediction id.
+    const startRes = await fetch("/.netlify/functions/cizim", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        panel: desc,
-        stil: style.p,
-        refImage: refImageUrl || undefined,
-      }),
+      body: JSON.stringify({ panel: desc, stil: style.p, refImage: refImageUrl || undefined }),
     });
-    if (!res.ok) return null;
-    const d = await res.json();
-    return d.url || null;
+    if (!startRes.ok) return null;
+    const started = await startRes.json();
+    if (!started.id) return null;
+
+    // Step 2: poll for completion (real image generation can take up to ~30s).
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const statusRes = await fetch(`/.netlify/functions/cizim-durum?id=${encodeURIComponent(started.id)}`);
+      if (!statusRes.ok) continue;
+      const s = await statusRes.json();
+      if (s.status === "succeeded" && s.url) return s.url;
+      if (s.status === "failed" || s.status === "canceled") return null;
+    }
+    return null;
   } catch {
     return null;
   }
