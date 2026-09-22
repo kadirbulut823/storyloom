@@ -33,10 +33,12 @@ export default async (req) => {
     },
     body: JSON.stringify({ input }),
   });
+  console.log("cizim: called model", modelPath, "status", r.status);
 
   const d = await r.json();
 
   if (!r.ok) {
+    console.error("cizim: replicate error", r.status, JSON.stringify(d));
     return Response.json({ error: d.detail || d.error || "Replicate error", raw: d }, { status: r.status });
   }
 
